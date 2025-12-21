@@ -1,0 +1,420 @@
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.5, maximum-scale=2.0, user-scalable=yes" /> 
+        <title>数据中心</title>
+        <link rel="icon" href="{{ url_for('static', filename='mini_logo.png') }}">
+        <script src="{{ url_for('static', filename='jquery-2.0.2.min.js') }}"></script>
+        <script>
+            (function() {
+                var rawColor = "{{ theme_color }}";
+                if (!rawColor) rawColor = "FF9800"; 
+                var hex = "#" + rawColor.replace(/^#/, '');
+
+                var r = parseInt(hex.substring(1, 3), 16);
+                var g = parseInt(hex.substring(3, 5), 16);
+                var b = parseInt(hex.substring(5, 7), 16);
+
+                r /= 255, g /= 255, b /= 255;
+                var max = Math.max(r, g, b), min = Math.min(r, g, b);
+                var h, s, l = (max + min) / 2;
+
+                if (max == min) {
+                    h = s = 0; 
+                } else {
+                    var d = max - min;
+                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                    switch (max) {
+                        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                        case g: h = (b - r) / d + 2; break;
+                        case b: h = (r - g) / d + 4; break;
+                    }
+                    h /= 6;
+                }
+                
+                function hslToHex(h, s, l) {
+                    var r, g, b;
+                    if (s == 0) {
+                        r = g = b = l; 
+                    } else {
+                        var hue2rgb = function hue2rgb(p, q, t) {
+                            if (t < 0) t += 1;
+                            if (t > 1) t -= 1;
+                            if (t < 1/6) return p + (q - p) * 6 * t;
+                            if (t < 1/2) return q;
+                            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                            return p;
+                        }
+                        var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                        var p = 2 * l - q;
+                        r = hue2rgb(p, q, h + 1/3);
+                        g = hue2rgb(p, q, h);
+                        b = hue2rgb(p, q, h - 1/3);
+                    }
+                    var toHex = function(x) {
+                        var hex = Math.round(x * 255).toString(16);
+                        return hex.length === 1 ? '0' + hex : hex;
+                    };
+                    return "#" + toHex(r) + toHex(g) + toHex(b);
+                }
+
+                // 调高了饱和度参数 (第二个参数)
+                var cssVars = {
+                    '--c-bg': hslToHex(h, 0.6, 0.97),
+                    '--c-card': hslToHex(h, 0.75, 0.92),
+                    '--c-hover': hslToHex(h, 0.5, 0.94),
+                    '--c-accent': hslToHex(h, 0.95, 0.85),
+                    '--c-text-sub': hslToHex(h, 0.5, 0.40),
+                    '--c-text': hslToHex(h, 0.6, 0.29),
+                    '--c-placeholder': hslToHex(h, 0.3, 0.82),
+                    '--c-focus': hslToHex(h, 1.0, 0.50),
+                    '--c-shadow': hslToHex(h, 0.3, 0.80)
+                };
+
+                var style = document.createElement('style');
+                var cssString = ':root {';
+                for (var key in cssVars) {
+                    cssString += key + ': ' + cssVars[key] + ';';
+                }
+                cssString += '}';
+                style.innerHTML = cssString;
+                document.head.appendChild(style);
+            })();
+        </script>
+    </head>
+    <body>
+        <div class="memory-container">
+            <h1>数据中心</h1>
+            <span id="text">你可以这里管理长期记忆和上下文，或导入导出数据。</span>
+            <h3>导入导出</h3>
+            <a href="/export-memory?user={{ user_id }}"><button id="export_data">导出长期记忆</button></a>
+            <a href="/export-context?user={{ user_id }}"><button id="export_data">导出上下文</button></a>
+            <form action="/import-memory" method="post" enctype="multipart/form-data" class="import-form" id="import-memory-form">
+                <input type="hidden" name="user" value="{{ user_id }}">
+                <input type="file" name="memory_file" id="memory_file" accept=".json" style="display: none;">
+                <label for="memory_file" class="import-btn">导入长期记忆</label>
+            </form>
+            <form action="/import-context" method="post" enctype="multipart/form-data" class="import-form" id="import-context-form">
+                <input type="hidden" name="user" value="{{ user_id }}">
+                <input type="file" name="context_file" id="context_file" accept=".json" style="display: none;">
+                <label for="context_file" class="import-btn">导入上下文</label>
+            </form>
+            <h3>上下文管理</h3>
+            <a href="/context?user={{ user_id }}" target="_blank"><button id="view-context">查看上下文</button></a>
+            <button id="remove-context">清空上下文</button>
+            <h3>长期记忆管理</h3>
+            <form action="/add-memory" method="post" id="add-memory-form">
+                <input type="hidden" name="user" value="{{ user_id }}">
+                <div class="add-memory-container">
+                    <input type="text" required maxlength="50" name="memory_content" id="memory_content" placeholder="输入要添加的记忆...">
+                    <input type="submit" value="添加记忆" id="add-submit">
+                </div>
+            </form>
+
+            <div id="content">
+                {% for i in memory_list %}
+                    <span class="li">
+                        <span>{{ i }}</span>
+                        <form action="/remove-memory" method="post" class="remove-form">
+                            <input type="hidden" name="user" value="{{ user_id }}">
+                            <input type="hidden" name="memory" value="{{ i|e }}">
+                            <button type="submit" class="remove-btn">删除</button>
+                        </form>
+                    </span>
+                {% endfor %}
+                <span id="tip">{{ tip }}</span>
+            </div>
+        </div>
+
+        <script>
+            $(function(){
+                $('#remove-context').click(function(){
+                    if(confirm('确定清空上下文吗？此操作不可逆')){
+                        window.location.href = '/remove-context?user={{ user_id }}'
+                    }
+                })
+                // 监听长期记忆文件选择
+                $('#memory_file').change(function(){
+                if(this.files.length > 0){ // 确认选中了文件
+                    $('#import-memory-form').submit(); // 自动提交表单
+                }
+                });
+                // 监听上下文文件选择
+                $('#context_file').change(function(){
+                if(this.files.length > 0){
+                    $('#import-context-form').submit();
+                }
+            })
+        })
+        </script>
+        <style>
+            @font-face {
+                font-family: font;
+                src: url({{ url_for('static', filename='font.ttf') }});
+            }
+            * {
+                font-family: font;
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                background-color: var(--c-bg);
+                color: var(--c-text);
+                min-height: 100vh;
+                padding: 0;
+                margin: 0 auto;
+                line-height: 1.6;
+            }
+
+            /* 页面容器，参考首页right-content布局 */
+            .memory-container {
+                width: 100%;
+                max-width: 800px;
+                min-height: 100vh;
+                padding: 40px 20px;
+                margin: 0 auto;
+            }
+
+            h1 {
+                font-size: 28px;
+                color: var(--c-text);
+                margin-bottom: 15px;
+            }
+
+            h3{
+                margin-bottom: 15px;
+            }
+
+            #text {
+                display: inline-block;
+                color: var(--c-text-sub);
+                font-size: 16px;
+                margin-bottom: 15px;
+            }
+
+            /* 新增：添加记忆表单样式（参考首页输入框布局） */
+            #add-memory-form {
+                margin-bottom: 30px;
+            }
+
+            .add-memory-container {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+            }
+
+            #memory_content {
+                flex: 1;
+                min-width: 200px;
+                padding: 12px 15px;
+                border: 2px solid var(--c-accent);
+                border-radius: 25px;
+                font-size: 15px;
+                transition: all 0.3s ease;
+                color: var(--c-text);
+                background-color: var(--c-bg);
+            }
+
+            #memory_content::placeholder {
+                color: var(--c-placeholder);
+            }
+
+            #memory_content:focus {
+                outline: none;
+                border-color: var(--c-focus);
+            }
+
+            /* 统一所有按钮的基础样式 */
+            #export_data, #remove-context, #view-context, .import-btn, #add-submit {
+                display: inline-flex; /* 统一显示模式 */
+                align-items: center;
+                justify-content: center;
+                background-color: var(--c-accent);
+                border: none;
+                padding: 12px 25px;
+                border-radius: 25px;
+                font-size: 15px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease;
+                color: var(--c-text);
+                line-height: 1; /* 统一行高 */
+                vertical-align: middle; /* 统一垂直对齐 */
+                margin: 0 10px 15px 0; /* 统一外边距 */
+            }
+            #remove-context, #view-context, #export_data{
+                margin-bottom: 15px;
+                margin-right: 10px;
+            }
+
+            #add-submit{
+                margin-bottom: 1px;
+            }
+            #add-submit:hover {
+                transform: translateY(-2px);
+            }
+
+            #remove-context:hover {
+                transform: translateY(-2px);
+            }
+
+            #view-context:hover {
+                transform: translateY(-2px);
+            }
+
+            #export_data:hover {
+                transform: translateY(-2px);
+            }
+
+            #add-submit:active {
+                transform: translateY(0);
+            }
+
+            #remove-context:active {
+                transform: translateY(0);
+            }
+
+            #view-context:active {
+                transform: translateY(0);
+            }
+
+            #export_data:active {
+                transform: translateY(0);
+            }
+
+            #add-submit:disabled {
+                background-color: var(--c-accent);
+                opacity: 0.7;
+                cursor: not-allowed;
+                transform: none;
+            }
+
+            /* 记忆列表容器 */
+            #content {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            /* 单个记忆项样式，参考首页message组件 */
+            .li {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background-color: var(--c-card);
+                padding: 15px 20px;
+                border-radius: 25px;
+                font-size: 16px;
+                transition: all 0.2s ease;
+            }
+
+            .li:hover {
+                background-color: var(--c-accent);
+            }
+
+            #tip{
+                text-align: center;
+                color: var(--c-text-sub);
+                opacity: 0.8;
+            }
+
+            /* 新增：删除按钮样式（替换原a标签） */
+            .remove-form {
+                margin: 0;
+                padding: 0;
+            }
+
+            .remove-btn {
+                color: var(--c-text-sub);
+                text-decoration: none;
+                font-size: 14px;
+                padding: 6px 12px;
+                border-radius: 15px;
+                background-color: var(--c-bg); /* 改为实色背景 */
+                transition: all 0.15s ease;
+                border: none;
+                cursor: pointer;
+                margin-left: 15px;
+            }
+
+            .remove-btn:hover {
+                background-color: var(--c-bg);
+                filter: brightness(0.95); /* 实色变暗模拟悬停 */
+                color: var(--c-text);
+                transform: translateY(-1px);
+            }
+
+            /* 响应式调整，参考首页媒体查询 */
+            @media (max-width: 768px) {
+                .memory-container {
+                    padding: 30px 15px;
+                }
+
+                h1 {
+                    font-size: 24px;
+                }
+
+                #memory_content {
+                    min-width: 150px;
+                    font-size: 14px;
+                    padding: 10px 12px;
+                }
+
+                #add-submit {
+                    padding: 10px 20px;
+                    font-size: 14px;
+                }
+
+                .li {
+                    padding: 12px 15px;
+                    font-size: 15px;
+                }
+
+                .remove-btn {
+                    padding: 5px 10px;
+                    font-size: 13px;
+                }
+            }
+
+            /* 新增：导入按钮样式 */
+            /* 移除import-form的额外间距（避免叠加） */
+            .import-form {
+                display: inline-block;
+                margin: 0; /* 取消原有margin-right */
+            }
+
+            .import-btn {
+                display: inline-block;
+                background-color: var(--c-accent);
+                border: none;
+                padding: 12px 25px;
+                border-radius: 25px;
+                font-size: 15px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease;
+                color: var(--c-text);
+            }
+
+            .import-btn:hover {
+                transform: translateY(-2px);
+            }
+
+            .import-btn:active {
+                transform: translateY(0);
+            }
+
+            /* 响应式样式也统一调整 */
+            @media (max-width: 768px) {
+                #export_data, #remove-context, .import-btn {
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    margin: 0 8px 12px 0;
+                }
+            }
+        </style>
+    </body>
+</html>

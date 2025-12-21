@@ -1,0 +1,166 @@
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.5, maximum-scale=2.0, user-scalable=yes" />
+        <title>Nino Bot</title>
+        <link rel="icon" href="{{ url_for('static', filename='mini_logo.png') }}">
+        <script src="{{ url_for('static', filename='jquery-2.0.2.min.js') }}"></script>
+        <script>
+            // 复制自第一个页面的颜色计算逻辑
+            (function() {
+                // 假设 theme_color 默认为 FF9800，如果未设置
+                var rawColor = "{{ theme_color }}";
+                if (!rawColor) rawColor = "FF9800";
+                var hex = "#" + rawColor.replace(/^#/, '');
+
+                var r = parseInt(hex.substring(1, 3), 16);
+                var g = parseInt(hex.substring(3, 5), 16);
+                var b = parseInt(hex.substring(5, 7), 16);
+
+                r /= 255, g /= 255, b /= 255;
+                var max = Math.max(r, g, b), min = Math.min(r, g, b);
+                var h, s, l = (max + min) / 2;
+
+                if (max == min) {
+                    h = s = 0;
+                } else {
+                    var d = max - min;
+                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                    switch (max) {
+                        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                        case g: h = (b - r) / d + 2; break;
+                        case b: h = (r - g) / d + 4; break;
+                    }
+                    h /= 6;
+                }
+
+                function hslToHex(h, s, l) {
+                    var r, g, b;
+                    if (s == 0) {
+                        r = g = b = l;
+                    } else {
+                        var hue2rgb = function hue2rgb(p, q, t) {
+                            if (t < 0) t += 1;
+                            if (t > 1) t -= 1;
+                            if (t < 1/6) return p + (q - p) * 6 * t;
+                            if (t < 1/2) return q;
+                            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                            return p;
+                        }
+                        var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                        var p = 2 * l - q;
+                        r = hue2rgb(p, q, h + 1/3);
+                        g = hue2rgb(p, q, h);
+                        b = hue2rgb(p, q, h - 1/3);
+                    }
+                    var toHex = function(x) {
+                        var hex = Math.round(x * 255).toString(16);
+                        return hex.length === 1 ? '0' + hex : hex;
+                    };
+                    return "#" + toHex(r) + toHex(g) + toHex(b);
+                }
+
+                // 调高了饱和度参数 (第二个参数)
+                var cssVars = {
+                    '--c-bg': hslToHex(h, 0.6, 0.97),
+                    '--c-card': hslToHex(h, 0.75, 0.92),
+                    '--c-hover': hslToHex(h, 0.5, 0.94),
+                    '--c-accent': hslToHex(h, 0.95, 0.85),
+                    '--c-text-sub': hslToHex(h, 0.5, 0.40),
+                    '--c-text': hslToHex(h, 0.6, 0.29),
+                    '--c-placeholder': hslToHex(h, 0.3, 0.82),
+                    '--c-focus': hslToHex(h, 1.0, 0.50),
+                    '--c-shadow': hslToHex(h, 0.3, 0.80)
+                };
+
+                var style = document.createElement('style');
+                var cssString = ':root {';
+                for (var key in cssVars) {
+                    cssString += key + ': ' + cssVars[key] + ';';
+                }
+                cssString += '}';
+                style.innerHTML = cssString;
+                document.head.appendChild(style);
+            })();
+        </script>
+    </head>
+    <body>
+        <div class="password-container">
+            <h2 class="modal-title">Nino🍥</h2>
+            <div class="status-display">
+                <p class="status-text">🍥 nino-bot 正在运行</p>
+            </div>
+        </div>
+
+        <style>
+            @font-face {
+                font-family: font;
+                src: url({{ url_for('static', filename='font.ttf') }});
+            }
+            * {
+                font-family: font;
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            /* 更改：使用CSS变量 */
+            body {
+                background-color: var(--c-bg); /* 背景颜色 */
+                color: var(--c-text); /* 主要文字颜色 */
+                min-height: 100vh;
+                padding: 0;
+                margin: 0 auto;
+                line-height: 1.6;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            /* 密码容器，居中显示 */
+            .password-container {
+                width: 100%;
+                max-width: 400px;
+                padding: 40px 20px;
+                text-align: center;
+            }
+
+            .status-display {
+                display: flex;
+                flex-direction: column;
+                gap: 15px;
+                align-items: center;
+                margin-top: 20px;
+            }
+
+            /* 状态文本样式，匹配输入框风格 */
+            .status-text {
+                width: 100%;
+                max-width: 320px;
+                padding: 15px 20px;
+                /* 更改：使用CSS变量 */
+                border: 2px solid var(--c-accent); /* 边框颜色使用强调色 */
+                border-radius: 25px;
+                font-size: 16px;
+                color: var(--c-text); /* 文字颜色 */
+                /* 更改：使用CSS变量 */
+                background-color: var(--c-bg); /* 背景颜色使用卡片色 */
+                text-align: center;
+                margin: 0;
+            }
+
+            h2{
+                font-size: 55px;
+                margin-bottom: 20px;
+            }
+
+            /* 响应式调整 */
+            @media (max-width: 768px) {
+                .status-text {
+                    padding: 12px 15px;
+                    font-size: 15px;
+                }
+            }
+        </style>
+    </body>
+</html>
