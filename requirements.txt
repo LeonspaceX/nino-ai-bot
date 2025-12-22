@@ -2,3 +2,4 @@ flask
 openai
 requests
 websocket-client
+python-dotenv

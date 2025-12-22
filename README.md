@@ -2,7 +2,7 @@
 
 # Nino-Bot🍥
 
-Nino是一款轻量级、开源的AI聊天机器人，基于[nino](https://github.com/Pinpe/nino-ai-chat)项目二次开发，专注于陪伴与理解用户。它能记住不同用户的偏好、习惯和重要信息，结合时间，用可爱温柔的语气与用户互动，可用于日常群内聊天、心理调适等场景。
+Nino-Bot是一款轻量级、开源的AI聊天机器人，基于[nino](https://github.com/Pinpe/nino-ai-chat)项目二次开发，专注于陪伴与理解用户。它能记住不同用户的偏好、习惯和重要信息，结合时间，用可爱温柔的语气与用户互动，可用于日常群内聊天、心理调适等场景。
 
 ## 🌟 功能特点
 - **双向奔赴的陪伴**：用口语化、可爱调皮的语气交流，支持简单颜文字和软萌后缀（w、喵、捏等）
@@ -21,10 +21,35 @@ Nino是一款轻量级、开源的AI聊天机器人，基于[nino](https://githu
 ```bash
 pip install -r requirements.txt
 ```
-### 3. 配置onebot&api key
-复制一份config-example.json，改名为config.json，按要求配置。
 
-### 4. 启动程序
+### 3. 配置环境变量
+创建 `.env` 文件，配置必要的API密钥和Token：
+```bash
+# 复制环境变量模板文件
+cp .env.example .env
+```
+
+然后编辑 `.env` 文件，填入你的配置：
+```env
+# AI API配置
+AI_API_KEY=sk-your-api-key-here
+
+# 视觉模型API配置
+VISUAL_API_KEY=sk-your-visual-api-key
+
+# OneBot服务器Token配置
+ONEBOT_TOKEN=your_onebot_token
+```
+
+### 4. 配置应用设置
+复制一份 `config-example.json`，改名为 `config.json`：
+```bash
+cp data/config-example.json data/config.json
+```
+
+根据需要修改 `config.json` 。
+
+### 5. 启动程序
 运行`shell.py`启动webui&onebot客户端：
 ```bash
 python shell.py
@@ -34,11 +59,9 @@ python shell.py
 ## 🛠️ 技术栈
 - 后端：Python、Flask
 - 前端：HTML、CSS、jQuery
-- 第三方依赖：flask、openai、requests、websocket
+- 第三方依赖：flask、openai、requests、websocket、python-dotenv
 - API服务：OPENAI API
 - 数据存储：JSON文件
-
-
 
 ## ⚠️ 注意事项
 1. AI回复可能存在「幻觉」（虚构信息），请理性判断，Nino及其作者不承担相关责任

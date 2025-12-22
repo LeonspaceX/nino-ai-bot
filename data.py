@@ -1,5 +1,9 @@
 import json
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 
 def _json_dump(context, file_path):
@@ -44,10 +48,17 @@ def load_data(user_id: str | None = None) -> dict[str]:
     :param user_id: 用户ID，如果为None则使用默认数据
     '''
     paths = _user_paths(user_id)
+    config = json.load(open('data/config.json', encoding='UTF-8'))
+
+    # 从环境变量读取敏感配置（优先使用环境变量）
+    config['ai_api_key'] = os.getenv('AI_API_KEY', config.get('ai_api_key', ''))
+    config['visual_api_key'] = os.getenv('VISUAL_API_KEY', config.get('visual_api_key', ''))
+    config['onebot_token'] = os.getenv('ONEBOT_TOKEN', config.get('onebot_token', ''))
+
     return {
         'context': json.load(open(paths['context'], encoding='UTF-8')),
         'memory':  json.load(open(paths['memory'], encoding='UTF-8')),
-        'config':  json.load(open('data/config.json', encoding='UTF-8'))
+        'config':  config
     }
 
 
@@ -149,3 +160,62 @@ def verify_user_token(user_id: str, token: str) -> bool:
     '''
     saved_token = get_user_token(user_id)
     return saved_token is not None and saved_token == token
+
+
+def get_blacklist() -> list:
+    '''
+    获取黑名单列表。
+
+    :return: 黑名单用户ID列表
+    '''
+    try:
+        blacklist = json.load(open('data/blacklist.json', encoding='UTF-8'))
+        return blacklist if isinstance(blacklist, list) else []
+    except Exception:
+        return []
+
+
+def add_to_blacklist(user_id: str) -> bool:
+    '''
+    将用户添加到黑名单。
+
+    :param user_id: 用户ID
+    :return: 是否添加成功（如果已存在返回False）
+    '''
+    try:
+        blacklist = get_blacklist()
+        if user_id in blacklist:
+            return False
+        blacklist.append(user_id)
+        _json_dump(blacklist, 'data/blacklist.json')
+        return True
+    except Exception:
+        return False
+
+
+def remove_from_blacklist(user_id: str) -> bool:
+    '''
+    将用户从黑名单移除。
+
+    :param user_id: 用户ID
+    :return: 是否移除成功（如果不存在返回False）
+    '''
+    try:
+        blacklist = get_blacklist()
+        if user_id not in blacklist:
+            return False
+        blacklist.remove(user_id)
+        _json_dump(blacklist, 'data/blacklist.json')
+        return True
+    except Exception:
+        return False
+
+
+def is_blacklisted(user_id: str) -> bool:
+    '''
+    检查用户是否在黑名单中。
+
+    :param user_id: 用户ID
+    :return: 是否在黑名单中
+    '''
+    return user_id in get_blacklist()

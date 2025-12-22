@@ -4,11 +4,9 @@
     "visual_base_url": "https://api.siliconflow.cn",
     "web_url": "http://127.0.0.1:5000",
     "visual_model": "Qwen/Qwen3-VL-32B-Instruct",
-    "visual_api_key": "sk-xxxx",
     "theme_color": "FAC387",
     "onebot_ws_url": "ws://127.0.0.1:3001/",
-    "onebot_token": "123456",
-    "ai_api_key": "sk-xxxx",
     "onebot_should_reconnect": true,
-    "onebot_reconnect_interval": 30
+    "onebot_reconnect_interval": 30,
+    "owner_ids": []
 }

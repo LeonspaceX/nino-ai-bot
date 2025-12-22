@@ -77,6 +77,11 @@ class OneBotClient:
             if not clean_message.startswith('#nino'):
                 return
 
+            # 检查用户是否在黑名单中
+            if data.is_blacklisted(user_id):
+                print(f'Ignored message from blacklisted user: {user_id}')
+                return
+
             # 标记消息为已处理
             if message_id:
                 self.processed_messages.add(message_id)
@@ -89,7 +94,10 @@ class OneBotClient:
 
             # 处理help指令
             if content == 'help':
-                self.send_reply(msg_data, '🍥 Nino Bot Help\n#nino help - 获取帮助\n#nino <消息> - 与nino对话\n#nino pass <密钥> - 设置隔离密钥\n#nino dashboard - 获取面板地址')
+                help_msg = '🍥 Nino Bot Help\n#nino help - 获取帮助\n#nino <消息> - 与nino对话\n#nino pass <密钥> - 设置隔离密钥\n#nino dashboard - 获取面板地址'
+                if self.is_owner(user_id):
+                    help_msg += '\n\n👑 主人专用指令：\n#nino ban <QQ号> - 拉黑用户\n#nino unban <QQ号> - 解除拉黑'
+                self.send_reply(msg_data, help_msg)
                 return
 
             # 处理pass指令
@@ -111,6 +119,39 @@ class OneBotClient:
                 web_url = self.config.get('web_url', 'http://127.0.0.1:5000')
                 dashboard_url = f'{web_url}/data?user={user_id}'
                 self.send_reply(msg_data, f'你的面板地址：\n{dashboard_url}')
+                return
+
+            # 处理ban指令（仅主人可用）
+            if content.startswith('ban '):
+                if not self.is_owner(user_id):
+                    self.send_reply(msg_data, '⛔ 此指令仅主人可用')
+                    return
+                target_id = content[4:].strip()
+                if not target_id:
+                    self.send_reply(msg_data, '请提供要拉黑的QQ号')
+                    return
+                if target_id in self.config.get('owner_ids', []):
+                    self.send_reply(msg_data, '❌ 不能拉黑主人')
+                    return
+                if data.add_to_blacklist(target_id):
+                    self.send_reply(msg_data, f'✅ 已将用户 {target_id} 加入黑名单')
+                else:
+                    self.send_reply(msg_data, f'ℹ️ 用户 {target_id} 已在黑名单中')
+                return
+
+            # 处理unban指令（仅主人可用）
+            if content.startswith('unban '):
+                if not self.is_owner(user_id):
+                    self.send_reply(msg_data, '⛔ 此指令仅主人可用')
+                    return
+                target_id = content[6:].strip()
+                if not target_id:
+                    self.send_reply(msg_data, '请提供要解除拉黑的QQ号')
+                    return
+                if data.remove_from_blacklist(target_id):
+                    self.send_reply(msg_data, f'✅ 已将用户 {target_id} 移出黑名单')
+                else:
+                    self.send_reply(msg_data, f'ℹ️ 用户 {target_id} 不在黑名单中')
                 return
 
             # 处理普通对话
@@ -174,6 +215,11 @@ class OneBotClient:
         except Exception as e:
             print(f'Error processing message: {e}')
 
+    def is_owner(self, user_id: str) -> bool:
+        '''检查用户是否为主人'''
+        owner_ids = self.config.get('owner_ids', [])
+        return user_id in owner_ids
+
     def send_reply(self, original_msg, reply_text):
         '''发送回复消息'''
         try:
@@ -201,6 +247,22 @@ class OneBotClient:
 
         except Exception as e:
             print(f'Error sending reply: {e}')
+
+    def send_private_message(self, user_id, message_text):
+        '''直接发送私聊消息给指定用户'''
+        try:
+            api_call = {
+                'action': 'send_private_msg',
+                'params': {
+                    'user_id': int(user_id),
+                    'message': message_text
+                }
+            }
+
+            self.ws.send(json.dumps(api_call))
+
+        except Exception as e:
+            print(f'Error sending private message: {e}')
 
     def get_quoted_message(self, message_id):
         '''从缓存中获取引用消息的内容'''
@@ -240,6 +302,14 @@ class OneBotClient:
         '''连接建立'''
         print('WebSocket connected')
         self.running = True
+
+        # 向所有主人发送启动消息
+        owner_ids = self.config.get('owner_ids', [])
+        if owner_ids and isinstance(owner_ids, list):
+            startup_message = '🍥 Nino Bot正在运行！\n#nino <消息> 开始聊天\n#nino help 获取更多帮助'
+            for owner_id in owner_ids:
+                if owner_id:  # 确保不是空字符串
+                    self.send_private_message(owner_id, startup_message)
 
     def _reconnect_loop(self):
         '''重连循环，每30秒尝试重连一次'''
