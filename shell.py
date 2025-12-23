@@ -14,6 +14,19 @@ def index():
     return render_template('index.html', theme_color=theme_color)
 
 
+@shell.route('/status')
+def status():
+    '''获取 OneBot 连接状态'''
+    try:
+        client = onebot.get_client()
+        if client and client.running:
+            return jsonify({'status': 'ok', 'connected': True})
+        else:
+            return jsonify({'status': 'error', 'connected': False})
+    except Exception as e:
+        return jsonify({'status': 'error', 'connected': False, 'error': str(e)})
+
+
 def is_auth(user, token):
     '''验证用户认证'''
     if not user or not token:

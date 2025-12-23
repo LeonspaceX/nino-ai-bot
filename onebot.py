@@ -17,14 +17,36 @@ class OneBotClient:
         self.should_reconnect = self.config.get('onebot_should_reconnect', True)  # 从配置读取，默认为 True
         self.reconnect_interval = self.config.get('onebot_reconnect_interval', 30)  # 从配置读取，默认为 30 秒
         self.processed_messages = set()  # 用于去重的消息ID集合
-        self.message_cache = {}  # 缓存最近的消息，用于引用查找
+
+        # 异步 API 调用机制
+        self.pending_api_calls = {}  # {echo: {'event': Event(), 'result': None}}
+        self.api_call_lock = threading.Lock()
+
+        # 降级方案：缓存最近的消息（用于 API 超时时的降级）
+        self.message_cache = {}  # {message_id: {'text': str, 'images': [urls]}}
 
     def on_message(self, ws, message):
         '''处理收到的消息'''
         try:
             msg_data = json.loads(message)
 
-            # 过滤掉 API 响应消息
+            # 处理 API 响应（有 echo 字段且不是事件消息）
+            echo = msg_data.get('echo')
+            if echo and 'post_type' not in msg_data:
+                self._handle_api_response(echo, msg_data)
+                return
+
+            # 如果没有 echo 但有 status 字段（某些 OneBot 实现不返回 echo）
+            if not echo and 'status' in msg_data and 'post_type' not in msg_data:
+                # 按 FIFO 顺序分配给最早的等待请求
+                with self.api_call_lock:
+                    if self.pending_api_calls:
+                        # 获取最早的请求
+                        earliest_echo = next(iter(self.pending_api_calls))
+                        self._handle_api_response(earliest_echo, msg_data)
+                        return
+
+            # 过滤掉非事件消息
             post_type = msg_data.get('post_type')
             if not post_type or post_type not in ['message', 'notice', 'request', 'meta_event']:
                 return
@@ -53,16 +75,30 @@ class OneBotClient:
             message_type = msg_data.get('message_type', '')
             message_id = msg_data.get('message_id')
 
-            # 缓存消息内容供引用查找使用
-            if message_id and raw_message:
-                # 统一使用字符串类型作为key
-                self.message_cache[str(message_id)] = raw_message
-                # 限制缓存大小，避免内存泄漏
-                if len(self.message_cache) > 100:
-                    # 删除最旧的50条
-                    old_keys = list(self.message_cache.keys())[:50]
-                    for key in old_keys:
-                        self.message_cache.pop(key, None)
+            # 缓存消息内容（用于 API 超时时的降级方案）
+            if message_id:
+                message_chain = msg_data.get('message', [])
+                if isinstance(message_chain, list):
+                    text_parts = []
+                    img_urls = []
+                    for seg in message_chain:
+                        if seg.get('type') == 'text':
+                            text_parts.append(seg.get('data', {}).get('text', ''))
+                        elif seg.get('type') == 'image':
+                            img_url = seg.get('data', {}).get('url', '')
+                            if img_url:
+                                img_urls.append(img_url)
+
+                    self.message_cache[str(message_id)] = {
+                        'text': ' '.join(text_parts).strip(),
+                        'images': img_urls
+                    }
+
+                    # 限制缓存大小
+                    if len(self.message_cache) > 200:
+                        old_keys = list(self.message_cache.keys())[:100]
+                        for key in old_keys:
+                            self.message_cache.pop(key, None)
 
             # 检查消息是否已处理（去重）
             if message_id and message_id in self.processed_messages:
@@ -77,9 +113,12 @@ class OneBotClient:
             if not clean_message.startswith('#nino'):
                 return
 
+            # 记录收到的消息
+            print(f'[收到消息] 用户 {user_id}: {clean_message[:50]}{"..." if len(clean_message) > 50 else ""}')
+
             # 检查用户是否在黑名单中
             if data.is_blacklisted(user_id):
-                print(f'Ignored message from blacklisted user: {user_id}')
+                print(f'[已忽略] 黑名单用户: {user_id}')
                 return
 
             # 标记消息为已处理
@@ -156,6 +195,19 @@ class OneBotClient:
 
             # 处理普通对话
             if content:
+                # 在单独线程中处理对话，避免阻塞 WebSocket 消息接收
+                threading.Thread(
+                    target=self._handle_conversation,
+                    args=(msg_data, content, user_id),
+                    daemon=True
+                ).start()
+
+        except Exception as e:
+            print(f'[错误] 消息处理异常: {e}')
+
+    def _handle_conversation(self, msg_data, content, user_id):
+        '''处理对话消息（在单独线程中执行）'''
+        try:
                 # 提取引用消息和图片
                 image_desc = ""
                 reply_info = ""
@@ -169,18 +221,27 @@ class OneBotClient:
                             if reply_id:
                                 # 统一转换为字符串类型
                                 reply_id = str(reply_id)
-                                # 尝试获取引用消息的内容
-                                reply_msg = self.get_quoted_message(reply_id)
-                                if reply_msg:
-                                    reply_info = f"[回复: \"{reply_msg}\"]\n"
+                                # 获取引用消息的内容和图片
+                                reply_text, reply_images = self.get_quoted_message(reply_id)
 
-                        # 处理图片
+                                # 构建引用信息
+                                if reply_text:
+                                    reply_info = f"[回复: \"{reply_text}\"]\n"
+
+                                # 处理引用消息中的图片（识别所有图片）
+                                if reply_images:
+                                    for img_url in reply_images:
+                                        img_desc = core.process_image(img_url, user_id)
+                                        if img_desc:
+                                            reply_info += f"[图片:\"{img_desc}\"]\n"
+
+                        # 处理当前消息中的图片（支持多张图片）
                         elif seg.get('type') == 'image':
                             img_url = seg.get('data', {}).get('url', '')
                             if img_url:
-                                image_desc = core.process_image(img_url, user_id)
-                                if image_desc:
-                                    image_desc = f"[图片:\"{image_desc}\"]"
+                                img_desc = core.process_image(img_url, user_id)
+                                if img_desc:
+                                    image_desc += f"[图片:\"{img_desc}\"]"
 
                 # 清理CQ码标签（移除所有[CQ:...]格式的内容）
                 content = re.sub(r'\[CQ:[^\]]*\]', '', content).strip()
@@ -210,15 +271,63 @@ class OneBotClient:
                         self.send_reply(msg_data, result['double_output'])
 
                 except Exception as e:
-                    self.send_reply(msg_data, f'[自动回复] 咱现在不在哦w...\nDebug: {str(e)}')
+                    self.send_reply(msg_data, f'[自动回复] 咱现在不在哦w...')
+                    print(f'[错误] AI 调用失败: {e}')
 
         except Exception as e:
-            print(f'Error processing message: {e}')
+            print(f'[错误] 处理对话失败: {e}')
 
     def is_owner(self, user_id: str) -> bool:
         '''检查用户是否为主人'''
         owner_ids = self.config.get('owner_ids', [])
         return user_id in owner_ids
+
+    def _handle_api_response(self, echo, response_data):
+        '''处理 API 响应，唤醒等待的线程'''
+        with self.api_call_lock:
+            if echo in self.pending_api_calls:
+                call_info = self.pending_api_calls[echo]
+                call_info['result'] = response_data
+                call_info['event'].set()  # 唤醒等待的线程
+
+    def _call_api_sync(self, action, params, timeout=5):
+        '''同步调用 OneBot API，返回响应结果（默认5秒超时）'''
+        try:
+            # 生成唯一的 echo 标识
+            echo = f'{action}_{int(time.time() * 1000)}_{id(threading.current_thread())}'
+
+            # 创建等待事件
+            event = threading.Event()
+            with self.api_call_lock:
+                self.pending_api_calls[echo] = {
+                    'event': event,
+                    'result': None
+                }
+
+            # 发送 API 请求
+            api_call = {
+                'action': action,
+                'params': params,
+                'echo': echo
+            }
+
+            self.ws.send(json.dumps(api_call))
+
+            # 等待响应（带超时）
+            if event.wait(timeout):
+                with self.api_call_lock:
+                    call_info = self.pending_api_calls.pop(echo, None)
+                    if call_info:
+                        return call_info['result']
+            else:
+                # 超时，清理
+                with self.api_call_lock:
+                    self.pending_api_calls.pop(echo, None)
+                return None
+
+        except Exception as e:
+            print(f'[错误] API 调用失败 {action}: {e}')
+            return None
 
     def send_reply(self, original_msg, reply_text):
         '''发送回复消息'''
@@ -245,8 +354,12 @@ class OneBotClient:
 
             self.ws.send(json.dumps(api_call))
 
+            # 记录发送的回复
+            preview = reply_text[:30] + '...' if len(reply_text) > 30 else reply_text
+            print(f'[发送回复] 给用户 {user_id}: {preview}')
+
         except Exception as e:
-            print(f'Error sending reply: {e}')
+            print(f'[错误] 发送回复失败: {e}')
 
     def send_private_message(self, user_id, message_text):
         '''直接发送私聊消息给指定用户'''
@@ -262,27 +375,72 @@ class OneBotClient:
             self.ws.send(json.dumps(api_call))
 
         except Exception as e:
-            print(f'Error sending private message: {e}')
+            print(f'[错误] 发送私聊消息失败: {e}')
 
     def get_quoted_message(self, message_id):
-        '''从缓存中获取引用消息的内容'''
+        '''通过 get_msg API 获取引用消息的完整内容，返回 (文本, [图片URL列表])'''
         try:
-            # 先从缓存中查找
-            if message_id in self.message_cache:
-                cached_msg = self.message_cache[message_id]
-                # 清理CQ码，只返回纯文本
-                clean_msg = re.sub(r'\[CQ:[^\]]*\]', '', cached_msg).strip()
-                # 限制长度，避免引用内容过长
-                if len(clean_msg) > 100:
-                    clean_msg = clean_msg[:100] + '...'
-                return clean_msg
-            else:
-                # 如果缓存中没有，返回一个通用提示
-                return "获取引用消息失败"
+            # 调用 get_msg API（使用7秒超时）
+            response = self._call_api_sync('get_msg', {'message_id': int(message_id)}, timeout=7)
+
+            if not response:
+                # API 超时，尝试从缓存获取
+                cached = self.message_cache.get(str(message_id))
+                if cached:
+                    text = cached.get('text', '')
+                    images = cached.get('images', [])
+                    if text or images:
+                        # 限制文本长度
+                        if len(text) > 100:
+                            text = text[:100] + '...'
+                        return text, images
+
+                return "获取引用消息失败", []
+
+            if response.get('status') != 'ok':
+                return "获取引用消息失败", []
+
+            # 提取消息数据
+            msg_data = response.get('data', {})
+            message_chain = msg_data.get('message', [])
+
+            if not isinstance(message_chain, list):
+                return "获取引用消息失败", []
+
+            # 提取文本和图片
+            text_parts = []
+            image_urls = []
+
+            for seg in message_chain:
+                seg_type = seg.get('type')
+                seg_data = seg.get('data', {})
+
+                if seg_type == 'text':
+                    text = seg_data.get('text', '').strip()
+                    if text:
+                        text_parts.append(text)
+
+                elif seg_type == 'image':
+                    img_url = seg_data.get('url', '')
+                    if img_url:
+                        image_urls.append(img_url)
+
+            # 合并文本
+            full_text = ' '.join(text_parts)
+
+            # 限制文本长度
+            if len(full_text) > 100:
+                full_text = full_text[:100] + '...'
+
+            # 如果没有提取到任何内容
+            if not full_text and not image_urls:
+                return "获取引用消息失败", []
+
+            return full_text if full_text else "", image_urls
 
         except Exception as e:
-            print(f'Error getting quoted message: {e}')
-            return "获取引用消息失败"
+            print(f'[错误] 获取引用消息失败: {e}')
+            return "获取引用消息失败", []
 
     def on_error(self, ws, error):
         '''处理错误'''

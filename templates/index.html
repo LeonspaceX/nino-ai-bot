@@ -88,9 +88,41 @@
         <div class="password-container">
             <h2 class="modal-title">Nino🍥</h2>
             <div class="status-display">
-                <p class="status-text">🍥 nino-bot 正在运行</p>
+                <p class="status-text" id="status-text">⏳ 正在检查连接状态...</p>
             </div>
         </div>
+
+        <script>
+            // 检查 OneBot 连接状态
+            function checkStatus() {
+                $.ajax({
+                    url: '/status',
+                    method: 'GET',
+                    timeout: 5000,
+                    success: function(data) {
+                        var statusEl = $('#status-text');
+                        if (data.connected) {
+                            statusEl.text('🍥 Nino Bot 正在运行');
+                            statusEl.css('border-color', 'var(--c-accent)');
+                        } else {
+                            statusEl.text('❌ OneBot 连接断开');
+                            statusEl.css('border-color', '#ff5252');
+                        }
+                    },
+                    error: function() {
+                        $('#status-text').text('❌ 无法连接到服务器');
+                        $('#status-text').css('border-color', '#ff5252');
+                    }
+                });
+            }
+
+            // 页面加载时立即检查
+            $(document).ready(function() {
+                checkStatus();
+                // 每5秒检查一次
+                setInterval(checkStatus, 5000);
+            });
+        </script>
 
         <style>
             @font-face {
