@@ -16,6 +16,7 @@ class OneBotClient:
         self.running = False
         self.should_reconnect = self.config.get('onebot_should_reconnect', True)  # 从配置读取，默认为 True
         self.reconnect_interval = self.config.get('onebot_reconnect_interval', 30)  # 从配置读取，默认为 30 秒
+        self.max_reconnect_interval = self.config.get('onebot_max_reconnect_interval', 300)  # 从配置读取，默认为 300 秒（5分钟）
         self.processed_messages = set()  # 用于去重的消息ID集合
 
         # 异步 API 调用机制
@@ -24,6 +25,11 @@ class OneBotClient:
 
         # 降级方案：缓存最近的消息（用于 API 超时时的降级）
         self.message_cache = {}  # {message_id: {'text': str, 'images': [urls]}}
+
+        # 重连控制
+        self.reconnecting = False  # 防止多个重连线程同时运行
+        self.reconnect_lock = threading.Lock()
+        self.current_reconnect_delay = self.reconnect_interval  # 当前重连延迟（支持指数退避）
 
     def on_message(self, ws, message):
         '''处理收到的消息'''
@@ -445,21 +451,21 @@ class OneBotClient:
     def on_error(self, ws, error):
         '''处理错误'''
         print(f'WebSocket Error: {error}')
-        if self.should_reconnect:
-            print(f'将在 {self.reconnect_interval} 秒后尝试重连...')
 
     def on_close(self, ws, close_status_code, close_msg):
         '''连接关闭'''
         print(f'WebSocket connection closed: {close_status_code} - {close_msg}')
         self.running = False
         if self.should_reconnect:
-            print(f'将在 {self.reconnect_interval} 秒后尝试重连...')
-            threading.Thread(target=self._reconnect_loop, daemon=True).start()
+            self._trigger_reconnect()
 
     def on_open(self, ws):
         '''连接建立'''
         print('WebSocket connected')
         self.running = True
+
+        # 重置重连延迟（连接成功后）
+        self.current_reconnect_delay = self.reconnect_interval
 
         # 向所有主人发送启动消息
         owner_ids = self.config.get('owner_ids', [])
@@ -469,19 +475,45 @@ class OneBotClient:
                 if owner_id:  # 确保不是空字符串
                     self.send_private_message(owner_id, startup_message)
 
-    def _reconnect_loop(self):
-        '''重连循环，每30秒尝试重连一次'''
-        while self.should_reconnect and not self.running:
-            time.sleep(self.reconnect_interval)
-            if not self.running and self.should_reconnect:
-                print('尝试重新连接 WebSocket...')
-                try:
-                    self.connect()
-                except Exception as e:
-                    print(f'重连失败: {e}')
+    def _trigger_reconnect(self):
+        '''触发重连（防止多个重连线程同时运行）'''
+        with self.reconnect_lock:
+            if self.reconnecting:
+                # 已经有重连线程在运行，不创建新的
+                return
+            self.reconnecting = True
 
-    def connect(self):
-        '''建立WebSocket连接'''
+        # 在新线程中启动重连循环
+        threading.Thread(target=self._reconnect_loop, daemon=True).start()
+
+    def _reconnect_loop(self):
+        '''重连循环，使用指数退避策略'''
+        try:
+            while self.should_reconnect and not self.running:
+                # 等待当前延迟时间
+                print(f'将在 {self.current_reconnect_delay} 秒后尝试重连...')
+                time.sleep(self.current_reconnect_delay)
+
+                if not self.running and self.should_reconnect:
+                    print(f'尝试重新连接 WebSocket... (当前延迟: {self.current_reconnect_delay}秒)')
+                    try:
+                        # 直接重建连接，不调用 connect()
+                        self._start_websocket()
+
+                        # 增加重连延迟（指数退避，但不超过最大值）
+                        self.current_reconnect_delay = min(
+                            self.current_reconnect_delay * 2,
+                            self.max_reconnect_interval
+                        )
+                    except Exception as e:
+                        print(f'重连失败: {e}')
+        finally:
+            # 重连循环结束，释放锁
+            with self.reconnect_lock:
+                self.reconnecting = False
+
+    def _start_websocket(self):
+        '''启动 WebSocket 连接（内部方法）'''
         # 如果已有连接，先关闭
         if self.ws:
             try:
@@ -503,19 +535,19 @@ class OneBotClient:
             on_close=self.on_close
         )
 
-        # 在单独的线程中运行
-        ws_thread = threading.Thread(target=self._run_with_reconnect, daemon=True)
+        # 在单独的线程中运行（不触发重连）
+        ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
         ws_thread.start()
 
-    def _run_with_reconnect(self):
-        '''运行 WebSocket 连接，失败时触发重连'''
-        try:
-            self.ws.run_forever()
-        except Exception as e:
-            print(f'WebSocket 运行错误: {e}')
-            if self.should_reconnect and not self.running:
-                print(f'将在 {self.reconnect_interval} 秒后尝试重连...')
-                threading.Thread(target=self._reconnect_loop, daemon=True).start()
+    def connect(self):
+        '''建立WebSocket连接'''
+        # 重置重连状态
+        with self.reconnect_lock:
+            self.reconnecting = False
+        self.current_reconnect_delay = self.reconnect_interval
+
+        # 启动 WebSocket
+        self._start_websocket()
 
     def disconnect(self):
         '''断开连接'''
