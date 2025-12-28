@@ -3,3 +3,4 @@ openai
 requests
 websocket-client
 python-dotenv
+psutil

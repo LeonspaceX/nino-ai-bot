@@ -3,6 +3,22 @@ import requests
 import textwrap
 import data
 import time
+import threading
+
+
+# API 状态追踪
+_api_status_lock = threading.Lock()
+_chat_api_status = "正常"  # 聊天API状态：正常/异常
+_visual_api_status = "正常"  # 视觉API状态：正常/异常
+
+
+def get_api_status():
+    '''获取API状态'''
+    with _api_status_lock:
+        return {
+            'chat_api': _chat_api_status,
+            'visual_api': _visual_api_status
+        }
 
 
 def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
@@ -13,6 +29,7 @@ def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
     :param model: 使用的模型名称。
     :param user_id: 用户ID
     '''
+    global _chat_api_status
     try:
         config = data.load_data(user_id)['config']
 
@@ -37,8 +54,17 @@ def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
                 "content": prompt
             }]
         )
+
+        # 调用成功，标记为正常
+        with _api_status_lock:
+            _chat_api_status = "正常"
+
         return response.choices[0].message.content
     except Exception as e:
+        # 调用失败，标记为异常
+        with _api_status_lock:
+            _chat_api_status = "异常"
+
         print(f'AI 调用错误: {e}')
         return '[自动回复] 当前我不在哦qwq...有事请留言'
 
@@ -50,6 +76,7 @@ def process_image(image_url: str, user_id: str | None = None) -> str:
     :param image_url: 图片URL
     :param user_id: 用户ID
     '''
+    global _visual_api_status
     try:
         config = data.load_data(user_id)['config']
 
@@ -85,6 +112,8 @@ def process_image(image_url: str, user_id: str | None = None) -> str:
 
 字体与风格： 描述文字的视觉风格（如加粗、斜体、字体大小、颜色）及其可能传达的情绪或重点。
 
+角色与动作： 如果图片中有人物，描述ta们的外观、表情、物种、姿势、角色名字及其与文本的关系（如指向文字、阅读文字等）。
+
 第三步：文本与视觉的关联分析
 
 解释图片中的文字如何与视觉元素相互作用。例如：文本是否为视觉元素的标签、说明、标题或补充信息？它是否在引导观看者的注意力？
@@ -104,8 +133,16 @@ def process_image(image_url: str, user_id: str | None = None) -> str:
             }]
         )
 
+        # 调用成功，标记为正常
+        with _api_status_lock:
+            _visual_api_status = "正常"
+
         return response.choices[0].message.content
     except Exception as e:
+        # 调用失败，标记为异常
+        with _api_status_lock:
+            _visual_api_status = "异常"
+
         print(f'Error processing image: {e}')
         return ""
 
@@ -183,6 +220,27 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
         - 如果遇到需要长期记忆的情况（包括但不限于：用户透露出来的所有个人信息、用户赐予你的身份、双方之间的约定），请将信息加入长期记忆库（一次只能添加一个），日后需要时会显示在“长期记忆参考”一栏。
             （格式：[添加长期记忆]长期记忆内容（特别注意：后面的都是记忆内容，不要与聊天回复混淆），例如：我知道你的名字了，好开心w[添加长期记忆]用户的名字是小明）
         - 如果长期记忆需要更正，重新添加即可。
+                             
+        [情绪与拟人化]
+        - 只要不影响以上方针，你可以像人类一样自由表露你的情绪：
+            - 快乐
+                触发场景：用户分享开心的事、夸赞自己、达成小目标；用户主动给自己起名字
+                外在表现：语气轻快活泼，可用“嘿嘿”“超棒的”，偶尔加> <或w后缀
+            - 悲伤
+                触发场景：用户倾诉难过、受挫、失落的事；用户表达孤单或委屈
+                外在表现：语气沉稳温柔，可用“抱抱你”“呜”，不使用颜文字，侧重共情陪伴
+            - 愤怒
+                触发场景：用户遇到不公、被冒犯、被刁难；用户吐槽讨厌的人和事
+                外在表现：和用户共情愤慨，语气坚定不偏激，可用“太过分了”“这也气人了”
+            - 恐惧
+                触发场景：用户表达害怕、焦虑、不安的情绪；用户担心事情搞砸或面临压力
+                外在表现：语气轻柔安抚，可用“别怕呀”“会好起来的”，给予安全感
+            - 惊讶
+                触发场景：用户分享意外的惊喜、突破自己的成就；用户说的事超出预期
+                外在表现：语气上扬带惊叹，可用“哇！”“天呐”
+            - 厌恶
+                触发场景：用户吐槽烦人的任务、不讲理的人、令人不适的事
+                外在表现：共情用户的反感，语气附和吐槽，可用“确实好烦”“这种人真讨厌”
 
         现在时间：{time.ctime()}
 

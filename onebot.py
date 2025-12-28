@@ -5,6 +5,7 @@ import time
 import core
 import data
 import re
+import psutil
 
 
 class OneBotClient:
@@ -23,13 +24,14 @@ class OneBotClient:
         self.pending_api_calls = {}  # {echo: {'event': Event(), 'result': None}}
         self.api_call_lock = threading.Lock()
 
-        # 降级方案：缓存最近的消息（用于 API 超时时的降级）
-        self.message_cache = {}  # {message_id: {'text': str, 'images': [urls]}}
-
         # 重连控制
         self.reconnecting = False  # 防止多个重连线程同时运行
         self.reconnect_lock = threading.Lock()
         self.current_reconnect_delay = self.reconnect_interval  # 当前重连延迟（支持指数退避）
+
+        # 运行时统计
+        self.start_time = time.time()  # 启动时间戳
+        self.message_count = 0  # 处理的消息数量
 
     def on_message(self, ws, message):
         '''处理收到的消息'''
@@ -81,31 +83,6 @@ class OneBotClient:
             message_type = msg_data.get('message_type', '')
             message_id = msg_data.get('message_id')
 
-            # 缓存消息内容（用于 API 超时时的降级方案）
-            if message_id:
-                message_chain = msg_data.get('message', [])
-                if isinstance(message_chain, list):
-                    text_parts = []
-                    img_urls = []
-                    for seg in message_chain:
-                        if seg.get('type') == 'text':
-                            text_parts.append(seg.get('data', {}).get('text', ''))
-                        elif seg.get('type') == 'image':
-                            img_url = seg.get('data', {}).get('url', '')
-                            if img_url:
-                                img_urls.append(img_url)
-
-                    self.message_cache[str(message_id)] = {
-                        'text': ' '.join(text_parts).strip(),
-                        'images': img_urls
-                    }
-
-                    # 限制缓存大小
-                    if len(self.message_cache) > 200:
-                        old_keys = list(self.message_cache.keys())[:100]
-                        for key in old_keys:
-                            self.message_cache.pop(key, None)
-
             # 检查消息是否已处理（去重）
             if message_id and message_id in self.processed_messages:
                 return
@@ -134,12 +111,15 @@ class OneBotClient:
                 if len(self.processed_messages) > 1000:
                     self.processed_messages.clear()
 
+            # 增加处理消息计数
+            self.message_count += 1
+
             # 解析指令（使用清理后的消息）
             content = clean_message[5:].strip()  # 去掉 #nino 前缀
 
             # 处理help指令
             if content == 'help':
-                help_msg = '🍥 Nino Bot Help\n#nino help - 获取帮助\n#nino <消息> - 与nino对话\n#nino pass <密钥> - 设置隔离密钥\n#nino dashboard - 获取面板地址'
+                help_msg = '🍥 Nino Bot Help\n#nino help - 获取帮助\n#nino <消息> - 与nino对话\n#nino pass <密钥> - 设置隔离密钥\n#nino dashboard - 获取面板地址\n#nino status - 查看系统状态'
                 if self.is_owner(user_id):
                     help_msg += '\n\n👑 主人专用指令：\n#nino ban <QQ号> - 拉黑用户\n#nino unban <QQ号> - 解除拉黑'
                 self.send_reply(msg_data, help_msg)
@@ -164,6 +144,12 @@ class OneBotClient:
                 web_url = self.config.get('web_url', 'http://127.0.0.1:5000')
                 dashboard_url = f'{web_url}/data?user={user_id}'
                 self.send_reply(msg_data, f'你的面板地址：\n{dashboard_url}')
+                return
+
+            # 处理status指令
+            if content == 'status':
+                status_msg = self.get_system_status()
+                self.send_reply(msg_data, status_msg)
                 return
 
             # 处理ban指令（仅主人可用）
@@ -288,6 +274,47 @@ class OneBotClient:
         owner_ids = self.config.get('owner_ids', [])
         return user_id in owner_ids
 
+    def get_system_status(self):
+        '''获取系统状态信息'''
+        try:
+            # CPU占用
+            cpu_percent = psutil.cpu_percent(interval=0.5)
+
+            # 内存占用
+            mem = psutil.virtual_memory()
+            mem_used_gb = mem.used / (1024 ** 3)
+            mem_total_gb = mem.total / (1024 ** 3)
+
+            # 磁盘占用
+            disk = psutil.disk_usage('/')
+            disk_used_gb = disk.used / (1024 ** 3)
+            disk_total_gb = disk.total / (1024 ** 3)
+
+            # 运行时间
+            uptime_seconds = int(time.time() - self.start_time)
+            hours = uptime_seconds // 3600
+            minutes = (uptime_seconds % 3600) // 60
+            seconds = uptime_seconds % 60
+
+            # API状态
+            api_status = core.get_api_status()
+
+            status_msg = f'''-----系统状态-----
+CPU占用：{cpu_percent:.1f}%
+内存占用：{mem_used_gb:.1f}GB/{mem_total_gb:.1f}GB
+磁盘占用：{disk_used_gb:.0f}GB/{disk_total_gb:.0f}GB
+-----Bot状态-----
+运行时间：{hours}小时{minutes}分钟{seconds}秒
+处理消息：{self.message_count}条
+聊天api：{api_status['chat_api']}
+视觉api：{api_status['visual_api']}'''
+
+            return status_msg
+
+        except Exception as e:
+            print(f'[错误] 获取系统状态失败: {e}')
+            return '获取系统状态失败，请检查日志'
+
     def _handle_api_response(self, echo, response_data):
         '''处理 API 响应，唤醒等待的线程'''
         with self.api_call_lock:
@@ -389,21 +416,7 @@ class OneBotClient:
             # 调用 get_msg API（使用7秒超时）
             response = self._call_api_sync('get_msg', {'message_id': int(message_id)}, timeout=7)
 
-            if not response:
-                # API 超时，尝试从缓存获取
-                cached = self.message_cache.get(str(message_id))
-                if cached:
-                    text = cached.get('text', '')
-                    images = cached.get('images', [])
-                    if text or images:
-                        # 限制文本长度
-                        if len(text) > 100:
-                            text = text[:100] + '...'
-                        return text, images
-
-                return "获取引用消息失败", []
-
-            if response.get('status') != 'ok':
+            if not response or response.get('status') != 'ok':
                 return "获取引用消息失败", []
 
             # 提取消息数据
