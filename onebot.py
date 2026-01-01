@@ -207,25 +207,18 @@ class OneBotClient:
 
                 if isinstance(message_chain, list):
                     for seg in message_chain:
-                        # 处理引用消息
+                        # 处理引用消息（新格式：包含发送者昵称和用户标记）
                         if seg.get('type') == 'reply':
                             reply_id = seg.get('data', {}).get('id')
                             if reply_id:
                                 # 统一转换为字符串类型
                                 reply_id = str(reply_id)
-                                # 获取引用消息的内容和图片
-                                reply_text, reply_images = self.get_quoted_message(reply_id)
+                                # 获取引用消息的完整内容（包含发送者和用户标记）
+                                reply_content = self.get_quoted_message(reply_id, user_id)
 
                                 # 构建引用信息
-                                if reply_text:
-                                    reply_info = f"[回复: \"{reply_text}\"]\n"
-
-                                # 处理引用消息中的图片（识别所有图片）
-                                if reply_images:
-                                    for img_url in reply_images:
-                                        img_desc = core.process_image(img_url, user_id)
-                                        if img_desc:
-                                            reply_info += f"[图片:\"{img_desc}\"]\n"
+                                if reply_content and reply_content != "获取引用消息失败":
+                                    reply_info = f'[回复:"{reply_content}"]\n'
 
                         # 处理当前消息中的图片（支持多张图片）
                         elif seg.get('type') == 'image':
@@ -410,56 +403,146 @@ CPU占用：{cpu_percent:.1f}%
         except Exception as e:
             print(f'[错误] 发送私聊消息失败: {e}')
 
-    def get_quoted_message(self, message_id):
-        '''通过 get_msg API 获取引用消息的完整内容，返回 (文本, [图片URL列表])'''
+    def _process_message_chain(self, message_chain, current_user_id):
+        '''
+        递归处理消息链，支持文本、图片、引用、合并转发等
+        返回格式化后的消息内容字符串
+        '''
+        result_parts = []
+
+        for seg in message_chain:
+            seg_type = seg.get('type')
+            seg_data = seg.get('data', {})
+
+            if seg_type == 'text':
+                text = seg_data.get('text', '').strip()
+                if text:
+                    result_parts.append(text)
+
+            elif seg_type == 'image':
+                # 处理图片
+                img_url = seg_data.get('url', '')
+                if img_url:
+                    img_desc = core.process_image(img_url, current_user_id)
+                    if img_desc:
+                        result_parts.append(f'[图片:"{img_desc}"]')
+                    else:
+                        result_parts.append('[图片]')
+
+            elif seg_type == 'reply':
+                # 处理引用消息（递归）
+                reply_id = seg_data.get('id')
+                if reply_id:
+                    reply_content = self.get_quoted_message(str(reply_id), current_user_id)
+                    if reply_content and reply_content != "获取引用消息失败":
+                        result_parts.append(f'[引用:"{reply_content}"]')
+
+            elif seg_type == 'forward':
+                # 处理合并转发消息
+                forward_id = seg_data.get('id')
+                if forward_id:
+                    forward_content = self.get_forward_message(str(forward_id), current_user_id)
+                    if forward_content and forward_content != "获取合并转发消息失败":
+                        result_parts.append(f'[合并转发:"{forward_content}"]')
+
+        return ' '.join(result_parts)
+
+    def get_quoted_message(self, message_id, current_user_id):
+        '''
+        通过 get_msg API 获取引用消息的完整内容
+        返回格式：发送者昵称（是否当前用户）: 消息内容
+        '''
         try:
             # 调用 get_msg API（使用7秒超时）
             response = self._call_api_sync('get_msg', {'message_id': int(message_id)}, timeout=7)
 
             if not response or response.get('status') != 'ok':
-                return "获取引用消息失败", []
+                # 如果 get_msg 失败，尝试使用 get_forward_msg
+                return self.get_forward_message(message_id, current_user_id)
 
             # 提取消息数据
             msg_data = response.get('data', {})
             message_chain = msg_data.get('message', [])
+            sender_info = msg_data.get('sender', {})
+
+            # 获取发送者信息
+            sender_id = str(msg_data.get('user_id', ''))
+            sender_nickname = sender_info.get('card') or sender_info.get('nickname', '未知用户')
+
+            # 判断是否是当前对话用户
+            is_current_user = (sender_id == current_user_id)
+            user_tag = "当前对话用户" if is_current_user else "不是当前用户"
 
             if not isinstance(message_chain, list):
-                return "获取引用消息失败", []
+                return "获取引用消息失败"
 
-            # 提取文本和图片
-            text_parts = []
-            image_urls = []
+            # 递归处理消息链
+            content = self._process_message_chain(message_chain, current_user_id)
 
-            for seg in message_chain:
-                seg_type = seg.get('type')
-                seg_data = seg.get('data', {})
+            if not content:
+                content = "[空消息]"
 
-                if seg_type == 'text':
-                    text = seg_data.get('text', '').strip()
-                    if text:
-                        text_parts.append(text)
+            # 限制总长度
+            if len(content) > 200:
+                content = content[:200] + '...'
 
-                elif seg_type == 'image':
-                    img_url = seg_data.get('url', '')
-                    if img_url:
-                        image_urls.append(img_url)
-
-            # 合并文本
-            full_text = ' '.join(text_parts)
-
-            # 限制文本长度
-            if len(full_text) > 100:
-                full_text = full_text[:100] + '...'
-
-            # 如果没有提取到任何内容
-            if not full_text and not image_urls:
-                return "获取引用消息失败", []
-
-            return full_text if full_text else "", image_urls
+            return f"{sender_nickname}（{user_tag}）: {content}"
 
         except Exception as e:
             print(f'[错误] 获取引用消息失败: {e}')
-            return "获取引用消息失败", []
+            return "获取引用消息失败"
+
+    def get_forward_message(self, forward_id, current_user_id):
+        '''
+        通过 get_forward_msg API 获取合并转发消息的完整内容
+        返回格式：每条消息按 "发送者: 内容" 格式组合
+        '''
+        try:
+            # 调用 get_forward_msg API（使用7秒超时）
+            response = self._call_api_sync('get_forward_msg', {'message_id': str(forward_id)}, timeout=7)
+
+            if not response or response.get('status') != 'ok':
+                return "获取合并转发消息失败"
+
+            # 提取消息列表
+            messages_data = response.get('data', {}).get('messages', [])
+
+            if not isinstance(messages_data, list) or not messages_data:
+                return "获取合并转发消息失败"
+
+            # 处理每条转发的消息
+            forward_parts = []
+            for msg in messages_data:
+                sender_info = msg.get('sender', {})
+                sender_id = str(msg.get('user_id', ''))
+                sender_nickname = sender_info.get('card') or sender_info.get('nickname', '未知用户')
+
+                # 判断是否是当前对话用户
+                is_current_user = (sender_id == current_user_id)
+                user_tag = "当前对话用户" if is_current_user else "不是当前用户"
+
+                # 递归处理消息链
+                message_chain = msg.get('message', [])
+                if isinstance(message_chain, list):
+                    content = self._process_message_chain(message_chain, current_user_id)
+                    if content:
+                        forward_parts.append(f"{sender_nickname}（{user_tag}）: {content}")
+
+            if not forward_parts:
+                return "获取合并转发消息失败"
+
+            # 组合所有消息，用分隔符分开
+            result = ', '.join(forward_parts)
+
+            # 限制总长度
+            if len(result) > 500:
+                result = result[:500] + '...'
+
+            return result
+
+        except Exception as e:
+            print(f'[错误] 获取合并转发消息失败: {e}')
+            return "获取合并转发消息失败"
 
     def on_error(self, ws, error):
         '''处理错误'''
