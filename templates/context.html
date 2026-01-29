@@ -94,6 +94,7 @@
                         {% if parts|length >= 4 %}
                             {% set speaker = parts[2] %}
                             {% set message = parts[3] %}
+                            {% set double_output = parts[4] if parts|length >= 5 else '' %}
 
                             {% if speaker == '用户' %}
                                 <div class="message-row user-row">
@@ -103,6 +104,11 @@
                                 <div class="message-row ai-row">
                                     <div class="message ai-message" data-message="{{ message|escape }}"></div>
                                 </div>
+                                {% if double_output and double_output != '这条回复没有使用分割回复' %}
+                                    <div class="message-row ai-row">
+                                        <div class="message ai-message" data-message="{{ double_output|escape }}"></div>
+                                    </div>
+                                {% endif %}
                             {% endif %}
                         {% endif %}
                     {% endfor %}

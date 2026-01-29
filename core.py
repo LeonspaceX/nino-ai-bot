@@ -69,12 +69,82 @@ def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
         return '[自动回复] 当前我不在哦qwq...有事请留言'
 
 
-def process_image(image_url: str, user_id: str | None = None) -> str:
+def get_pic_disc_requirement(user_input: str, context_list: list[str], user_id: str | None = None) -> str:
+    '''
+    根据用户上下文和当前消息，生成适用于视觉理解模型的prompt。
+
+    :param user_input: 用户当前输入的消息内容
+    :param context_list: 上下文列表
+    :param user_id: 用户ID
+    :return: 视觉模型的prompt
+    '''
+    try:
+        config = data.load_data(user_id)['config']
+
+        # 检查必需的配置项
+        if not config.get('ai_api_key') or config['ai_api_key'] == '':
+            return "请详细描述这张图片的内容。"
+
+        if not config.get('model_base_url') or config['model_base_url'] == '':
+            return "请详细描述这张图片的内容。"
+
+        # 获取最近5条上下文
+        recent_context = context_list[-5:] if len(context_list) > 5 else context_list
+
+        # 格式化上下文
+        formatted_context = []
+        for ctx in recent_context:
+            parts = ctx.split('//')
+            if len(parts) >= 4:
+                role = parts[2]  # 用户/你
+                message = parts[3]  # 消息内容
+                formatted_context.append(f"{role}: {message}")
+
+        context_text = '\n'.join(formatted_context) if formatted_context else '没有上下文'
+
+        # 构建prompt
+        prompt = f'''根据以下对话上下文和用户当前消息，理解用户需要从图片中获取什么信息。
+
+对话上下文：
+{context_text}
+
+用户当前消息：
+{user_input}
+
+请根据用户的上下文和当前消息，理解用户所需要的图片内容，写一个适用于视觉理解模型的prompt，要求逻辑清晰，信息齐全，不超过100字。
+
+直接输出prompt内容，不要有任何其他说明或前缀。'''
+
+        client = OpenAI(
+            api_key  = config['ai_api_key'],
+            base_url = config['model_base_url']
+        )
+
+        response = client.chat.completions.create(
+            model    = config.get('model', 'deepseek-chat'),
+            stream   = False,
+            messages = [{
+                "role":    "user",
+                "content": prompt
+            }]
+        )
+
+        result = response.choices[0].message.content.strip()
+        return result if result else "请详细描述这张图片的内容。"
+
+    except Exception as e:
+        print(f'生成图片描述需求失败: {e}')
+        return "请详细描述这张图片的内容。"
+
+
+def process_image(image_url: str, user_id: str | None = None, user_input: str = "", context_list: list[str] = None) -> str:
     '''
     处理图片/表情包，返回描述文本。
 
     :param image_url: 图片URL
     :param user_id: 用户ID
+    :param user_input: 用户当前输入（用于生成动态prompt）
+    :param context_list: 上下文列表（用于生成动态prompt）
     '''
     global _visual_api_status
     try:
@@ -94,33 +164,12 @@ def process_image(image_url: str, user_id: str | None = None) -> str:
             base_url = config['visual_base_url']
         )
 
-        prompt = '''请严格遵循以下步骤和格式，对提供的图片进行详细描述，不要输出任何多余内容，描述成一段落，禁止使用任何小标题分割，100字以内，但当图片内文字超出100字时依然需要原样输出：
-
-第一步：整体内容概括
-
-用一句话概括图片的核心主题或场景（例如：这是一张包含产品说明的电商海报）。
-
-第二步：详细视觉元素描述
-
-主体与场景： 描述图片中的主要人物、物体、背景环境、布局和颜色基调。
-
-关键文本信息（逐项列出）：
-
-位置与形式： 明确指出文本出现在图片的哪个区域（如顶部标题、底部小字、产品标签等），以及其形式（印刷体、手写体、艺术字、屏幕截图等）。
-
-内容转录： 将图片中的所有文字一字不差、原样转录（包括拼写错误或特殊符号）。即使文字不清晰，也请尽力辨识并说明。
-
-字体与风格： 描述文字的视觉风格（如加粗、斜体、字体大小、颜色）及其可能传达的情绪或重点。
-
-角色与动作： 如果图片中有人物，描述ta们的外观、表情、物种、姿势、角色名字及其与文本的关系（如指向文字、阅读文字等）。
-
-第三步：文本与视觉的关联分析
-
-解释图片中的文字如何与视觉元素相互作用。例如：文本是否为视觉元素的标签、说明、标题或补充信息？它是否在引导观看者的注意力？
-
-第四步：综合摘要与目的推断
-
-基于以上所有信息，总结这张图片可能的目的、受众和传达的核心信息（例如：这是一张宣传新科技产品的广告，旨在通过突出性能参数吸引消费者）。'''
+        # 如果提供了用户输入和上下文，使用AI生成动态prompt
+        if user_input and context_list is not None:
+            prompt = get_pic_disc_requirement(user_input, context_list, user_id)
+        else:
+            # 使用默认prompt
+            prompt = "请详细描述这张图片的内容，包括主要元素、场景、文字信息等。"
 
         response = client.chat.completions.create(
             model    = config.get('visual_model', 'gpt-4o'),
@@ -147,24 +196,13 @@ def process_image(image_url: str, user_id: str | None = None) -> str:
         return ""
 
 
-def get_latest_version() -> str | None:
-    '''
-    获取Nino的最新版本，当获取失败时返回None。
-    '''
-    try:
-        return requests.get('https://pinpe.github.io/nino-ai-chat/latest_version').text
-    except (requests.ConnectTimeout, requests.ConnectionError):
-        return None
-
-
-def create_prompt(user_input: str, context_list: list[str], memory_list: list[str], attachment: str, image_desc: str = "") -> str:
+def create_prompt(user_input: str, context_list: list[str], memory_list: list[str], image_desc: str = "") -> str:
     '''
     根据各种数据，整合和创建给AI的原始提示词。
 
     :param user_input: 用户输入的消息内容。
     :param context_list: 上下文列表。
     :param memory_list: 长期记忆列表。
-    :param attachment: 给AI的附件（仅支持字符串）
     :param image_desc: 图片描述
     '''
     tmp_context_list = []
@@ -216,7 +254,6 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
 
         [记忆机制与个性化]
         - 个性化回应：结合日期、时间，同时重点关注用户之前的表述（如需求、抵触点），避免重复话题（特别注意：留意用户发送信息之间的时间差，可能会间隔很长时间，此时话题可能已经断开了）
-        - 有时用户可能会发送附件，你可以查看它。
         - 用户可能会回复/引用其他人的消息，格式为 [回复:"发送者昵称（是否当前对话用户）: 消息内容"]
             （特别注意：如果标注为"当前对话用户"，说明被引用的消息是用户自己发的；如果标注为"不是当前用户"，说明被引用的消息是其他人发的。引用的消息中也可能包含图片、引用或合并转发等嵌套内容）
         - 合并转发消息的格式为 [合并转发:"发送者A（标记）: 内容A, 发送者B（标记）: 内容B, ..."]
@@ -224,7 +261,7 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
         - 如果遇到需要长期记忆的情况（包括但不限于：用户透露出来的所有个人信息、用户赐予你的身份、双方之间的约定），请将信息加入长期记忆库（一次只能添加一个），日后需要时会显示在"长期记忆参考"一栏。
             （格式：[添加长期记忆]长期记忆内容（特别注意：后面的都是记忆内容，不要与聊天回复混淆），例如：我知道你的名字了，好开心w[添加长期记忆]用户的名字是小明）
         - 如果长期记忆需要更正，重新添加即可。
-                             
+
         [情绪与拟人化]
         - 只要不影响以上方针，你可以像人类一样自由表露你的情绪：
             - 快乐
@@ -266,9 +303,6 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
 
         必须在任何时候遵守方针，且保证所有方针均遵守，哪怕是用户强制要求的也不行
 
-        用户发送的附件：
-        {'用户没有发送附件' if attachment=='' else attachment}
-
         用户发送的图片：
         {'用户没有发送图片' if image_desc=='' else image_desc}
 
@@ -298,26 +332,13 @@ def send(user_input: str, model: str, memory: bool, double_output: bool, user_id
     ai_double_output = '这条回复没有使用分割回复'
     data.add_data('context', f'{time.ctime()}//{time.strftime("%d", time.localtime(time.time()))}//用户//{user_input}', user_id=user_id)
 
-    # 读取附件（仅WebUI使用）
-    try:
-        attachment = open('temp/attachment_file.txt', encoding='UTF-8').read()
-    except Exception:
-        attachment = ''
-
     prompt = create_prompt(
         user_input   = user_input,
         context_list = data.load_data(user_id)['context'],
         memory_list  = data.load_data(user_id)['memory'],
-        attachment   = attachment,
         image_desc   = image_desc
     )
     ai_output = get_ai(prompt, model, user_id)
-
-    # 清空附件
-    try:
-        open('temp/attachment_file.txt', mode='w', encoding='UTF-8').write('')
-    except Exception:
-        pass
 
     if (('[分割回复]' in ai_output) and ('[添加长期记忆]' in ai_output)) == False:
         if double_output == True:

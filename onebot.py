@@ -200,16 +200,30 @@ class OneBotClient:
     def _handle_conversation(self, msg_data, content, user_id):
         '''处理对话消息（在单独线程中执行）'''
         try:
-                # 提取引用消息和图片
+                # 提取引用消息、图片和at
                 image_desc = ""
                 reply_info = ""
+                at_info = ""
+                text_parts = []
                 message_chain = msg_data.get('message', [])
+
+                # 加载用户上下文（用于图片处理）
+                context_list = data.load_data(user_id)['context']
 
                 if isinstance(message_chain, list):
                     for seg in message_chain:
+                        seg_type = seg.get('type')
+                        seg_data = seg.get('data', {})
+
+                        # 处理文本
+                        if seg_type == 'text':
+                            text = seg_data.get('text', '').strip()
+                            if text:
+                                text_parts.append(text)
+
                         # 处理引用消息（新格式：包含发送者昵称和用户标记）
-                        if seg.get('type') == 'reply':
-                            reply_id = seg.get('data', {}).get('id')
+                        elif seg_type == 'reply':
+                            reply_id = seg_data.get('id')
                             if reply_id:
                                 # 统一转换为字符串类型
                                 reply_id = str(reply_id)
@@ -221,18 +235,37 @@ class OneBotClient:
                                     reply_info = f'[回复:"{reply_content}"]\n'
 
                         # 处理当前消息中的图片（支持多张图片）
-                        elif seg.get('type') == 'image':
-                            img_url = seg.get('data', {}).get('url', '')
+                        elif seg_type == 'image':
+                            img_url = seg_data.get('url', '')
                             if img_url:
-                                img_desc = core.process_image(img_url, user_id)
+                                # 组合当前用户输入（用于生成动态prompt）
+                                current_input = ' '.join(text_parts)
+                                img_desc = core.process_image(img_url, user_id, current_input, context_list)
                                 if img_desc:
                                     image_desc += f"[图片:\"{img_desc}\"]"
 
-                # 清理CQ码标签（移除所有[CQ:...]格式的内容）
-                content = re.sub(r'\[CQ:[^\]]*\]', '', content).strip()
+                        # 处理at消息
+                        elif seg_type == 'at':
+                            qq = seg_data.get('qq', '')
+                            if qq == 'all':
+                                # 处理@全体成员
+                                at_info += '[at:全体成员] '
+                            elif qq:
+                                # 获取被at用户的昵称
+                                nickname = self.get_user_nickname(qq)
+                                if nickname:
+                                    at_info += f'[at:{nickname}] '
+                                # 如果获取失败，直接删除（不添加任何内容）
 
-                # 组合最终内容：引用 + 图片 + 消息内容
-                final_content = reply_info + image_desc + content
+                # 组合文本内容
+                text_content = ' '.join(text_parts)
+
+                # 移除 #nino 前缀
+                if text_content.startswith('#nino'):
+                    text_content = text_content[5:].strip()
+
+                # 组合最终内容：引用 + at + 消息内容
+                final_content = reply_info + at_info + text_content
 
                 # 调用AI
                 try:
@@ -243,7 +276,7 @@ class OneBotClient:
                         memory=True,
                         double_output=True,
                         user_id=user_id,
-                        image_desc=image_desc
+                        image_desc=image_desc  # 图片描述单独传递
                     )
 
                     # 发送主回复
@@ -405,7 +438,7 @@ CPU占用：{cpu_percent:.1f}%
 
     def _process_message_chain(self, message_chain, current_user_id):
         '''
-        递归处理消息链，支持文本、图片、引用、合并转发等
+        递归处理消息链，支持文本、图片、引用、合并转发、at等
         返回格式化后的消息内容字符串
         '''
         result_parts = []
@@ -420,14 +453,27 @@ CPU占用：{cpu_percent:.1f}%
                     result_parts.append(text)
 
             elif seg_type == 'image':
-                # 处理图片
+                # 处理图片（引用消息中的图片使用默认prompt）
                 img_url = seg_data.get('url', '')
                 if img_url:
-                    img_desc = core.process_image(img_url, current_user_id)
+                    img_desc = core.process_image(img_url, current_user_id, "", None)
                     if img_desc:
                         result_parts.append(f'[图片:"{img_desc}"]')
                     else:
                         result_parts.append('[图片]')
+
+            elif seg_type == 'at':
+                # 处理at消息
+                qq = seg_data.get('qq', '')
+                if qq == 'all':
+                    # 处理@全体成员
+                    result_parts.append('[at:全体成员]')
+                elif qq:
+                    # 获取被at用户的昵称
+                    nickname = self.get_user_nickname(qq)
+                    if nickname:
+                        result_parts.append(f'[at:{nickname}]')
+                    # 如果获取失败，直接删除（不添加任何内容）
 
             elif seg_type == 'reply':
                 # 处理引用消息（递归）
@@ -491,6 +537,28 @@ CPU占用：{cpu_percent:.1f}%
         except Exception as e:
             print(f'[错误] 获取引用消息失败: {e}')
             return "获取引用消息失败"
+
+    def get_user_nickname(self, user_id):
+        '''
+        通过 get_stranger_info API 获取用户的QQ昵称
+        返回昵称字符串，失败返回 None
+        '''
+        try:
+            # 调用 get_stranger_info API（使用5秒超时）
+            response = self._call_api_sync('get_stranger_info', {'user_id': int(user_id)}, timeout=5)
+
+            if not response or response.get('status') != 'ok':
+                return None
+
+            # 提取昵称
+            data = response.get('data', {})
+            nickname = data.get('nick', '')
+
+            return nickname if nickname else None
+
+        except Exception as e:
+            print(f'[错误] 获取用户昵称失败 (user_id={user_id}): {e}')
+            return None
 
     def get_forward_message(self, forward_id, current_user_id):
         '''

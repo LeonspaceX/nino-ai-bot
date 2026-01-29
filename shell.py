@@ -1,6 +1,5 @@
 from flask import *
 import data
-import time
 import onebot
 
 
