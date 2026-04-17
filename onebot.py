@@ -32,6 +32,21 @@ class OneBotClient:
         # 运行时统计
         self.start_time = time.time()  # 启动时间戳
         self.message_count = 0  # 处理的消息数量
+        self._start_agent_manager()
+
+    def _start_agent_manager(self):
+        '''启动 Lite Toolcall Agent 常驻连接/监听。'''
+        agent_config = self.config.get('agent', {})
+        if not isinstance(agent_config, dict) or not agent_config.get('enabled', False):
+            return
+
+        def _run():
+            try:
+                core.initialize_agent_manager(self.config)
+            except Exception as e:
+                print(f'[Lite Toolcall] Agent 初始化失败: {e}')
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def on_message(self, ws, message):
         '''处理收到的消息'''

@@ -8,5 +8,20 @@
     "onebot_ws_url": "ws://127.0.0.1:3001/",
     "onebot_should_reconnect": true,
     "onebot_reconnect_interval": 30,
-    "owner_ids": []
+    "owner_ids": [],
+    "agent": {
+        "enabled": false,
+        "tool_call_whitelist": [],
+        "max_rounds": 10,
+        "tool_result_context_limit": 5,
+        "servers": [
+            {
+                "name": "PeekAgent",
+                "enabled": true,
+                "connection_mode": "forward",
+                "url": "ws://127.0.0.1:8765",
+                "token": ""
+            }
+        ]
+    }
 }

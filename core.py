@@ -4,12 +4,25 @@ import textwrap
 import data
 import time
 import threading
+from agent_runtime import (
+    agent_access,
+    build_agent_prompt,
+    execute_tool_calls,
+    format_tool_result_context,
+    normalize_agent_config,
+    parse_tool_calls,
+    strip_tool_calls,
+)
+from lite_toolcall_client import LiteToolcallManager
 
 
 # API 状态追踪
 _api_status_lock = threading.Lock()
 _chat_api_status = "正常"  # 聊天API状态：正常/异常
 _visual_api_status = "正常"  # 视觉API状态：正常/异常
+_agent_manager_lock = threading.Lock()
+_agent_manager = None
+_agent_manager_signature = None
 
 
 def get_api_status():
@@ -21,7 +34,37 @@ def get_api_status():
         }
 
 
-def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
+def _agent_config_signature(agent_config: dict) -> str:
+    import json
+    return json.dumps(agent_config, ensure_ascii=False, sort_keys=True)
+
+
+def get_agent_manager(agent_config: dict) -> LiteToolcallManager:
+    global _agent_manager, _agent_manager_signature
+    signature = _agent_config_signature(agent_config)
+    with _agent_manager_lock:
+        if _agent_manager is not None and _agent_manager_signature == signature:
+            return _agent_manager
+        if _agent_manager is not None:
+            try:
+                _agent_manager.close()
+            except Exception:
+                pass
+        _agent_manager = LiteToolcallManager(agent_config)
+        _agent_manager_signature = signature
+        return _agent_manager
+
+
+def initialize_agent_manager(config: dict):
+    agent_config = normalize_agent_config(config)
+    if not agent_config["enabled"]:
+        return None
+    manager = get_agent_manager(agent_config)
+    manager.start_all()
+    return manager
+
+
+def get_ai(prompt: str, model: str, user_id: str | None = None, images: list[dict] | None = None) -> str:
     '''
     直接将**原始**的提示词发送给AI，是与AI交互的直接接口。
 
@@ -46,12 +89,24 @@ def get_ai(prompt: str, model: str, user_id: str | None = None) -> str:
             api_key  = config['ai_api_key'],
             base_url = config['model_base_url']
         )
+        message_content = prompt
+        if images:
+            message_content = [{"type": "text", "text": prompt}]
+            for image in images:
+                mime = image.get("mime", "image/png")
+                payload = image.get("base64", "")
+                if payload:
+                    message_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{payload}"},
+                    })
+
         response = client.chat.completions.create(
             model    = model,
             stream   = False,
             messages = [{
                 "role":    "user",
-                "content": prompt
+                "content": message_content
             }]
         )
 
@@ -196,7 +251,14 @@ def process_image(image_url: str, user_id: str | None = None, user_input: str = 
         return ""
 
 
-def create_prompt(user_input: str, context_list: list[str], memory_list: list[str], image_desc: str = "") -> str:
+def create_prompt(
+    user_input: str,
+    context_list: list[str],
+    memory_list: list[str],
+    image_desc: str = "",
+    agent_prompt: str = "",
+    agent_tool_context: str = "",
+) -> str:
     '''
     根据各种数据，整合和创建给AI的原始提示词。
 
@@ -217,6 +279,12 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
     else:
         for index in memory_list:
             tmp_memory_list.append(index + '\n')
+    agent_section = ""
+    if agent_prompt:
+        agent_section += f"\n\nAgent能力说明：\n{agent_prompt}"
+    if agent_tool_context:
+        agent_section += f"\n\nAgent工具调用结果上下文：\n{agent_tool_context}"
+
     prompt = textwrap.dedent(f'''
         接下来，请使用以下方针与用户（提问者，也就是我）对话，这些方针作用于所有对话：
 
@@ -312,6 +380,8 @@ def create_prompt(user_input: str, context_list: list[str], memory_list: list[st
         上下文参考（仅最新30条）：
         {tmp_context_list}
 
+        {agent_section}
+
         用户输入：{'还没有，可能需要你先发话' if user_input==None else user_input}
     ''')
     return prompt
@@ -332,13 +402,64 @@ def send(user_input: str, model: str, memory: bool, double_output: bool, user_id
     ai_double_output = '这条回复没有使用分割回复'
     data.add_data('context', f'{time.ctime()}//{time.strftime("%d", time.localtime(time.time()))}//用户//{user_input}', user_id=user_id)
 
+    loaded_data = data.load_data(user_id)
+    config = loaded_data['config']
+    agent_config = normalize_agent_config(config)
+    access = agent_access(user_id, config)
+    agent_manager = None
+    agent_prompt = ""
+    if access in {"owner", "whitelist"}:
+        agent_manager = get_agent_manager(agent_config)
+        agent_prompt = build_agent_prompt(user_id, config, agent_manager)
+    elif access == "denied":
+        agent_prompt = build_agent_prompt(user_id, config, None)
+
+    agent_rounds = []
+    agent_tool_context = ""
+    agent_images = []
     prompt = create_prompt(
         user_input   = user_input,
-        context_list = data.load_data(user_id)['context'],
-        memory_list  = data.load_data(user_id)['memory'],
-        image_desc   = image_desc
+        context_list = loaded_data['context'],
+        memory_list  = loaded_data['memory'],
+        image_desc   = image_desc,
+        agent_prompt = agent_prompt,
+        agent_tool_context = agent_tool_context
     )
     ai_output = get_ai(prompt, model, user_id)
+
+    if access in {"owner", "whitelist"} and agent_manager is not None:
+        max_rounds = agent_config["max_rounds"]
+        context_limit = agent_config["tool_result_context_limit"]
+        for _ in range(max_rounds):
+            tool_calls = parse_tool_calls(ai_output)
+            if not tool_calls:
+                break
+            agent_rounds.append(execute_tool_calls(agent_manager, tool_calls))
+            agent_tool_context, agent_images = format_tool_result_context(agent_rounds, context_limit)
+            prompt = create_prompt(
+                user_input=user_input,
+                context_list=data.load_data(user_id)['context'],
+                memory_list=data.load_data(user_id)['memory'],
+                image_desc=image_desc,
+                agent_prompt=agent_prompt,
+                agent_tool_context=agent_tool_context,
+            )
+            ai_output = get_ai(prompt, model, user_id, images=agent_images)
+        else:
+            agent_tool_context, agent_images = format_tool_result_context(agent_rounds, context_limit)
+            limit_message = f"已达到最大 Agent 工具调用轮数 {max_rounds}，请停止继续调用工具并给出最终回复。"
+            agent_tool_context = (agent_tool_context + "\n\n" + limit_message).strip()
+            prompt = create_prompt(
+                user_input=user_input,
+                context_list=data.load_data(user_id)['context'],
+                memory_list=data.load_data(user_id)['memory'],
+                image_desc=image_desc,
+                agent_prompt=agent_prompt,
+                agent_tool_context=agent_tool_context,
+            )
+            ai_output = get_ai(prompt, model, user_id, images=agent_images)
+
+        ai_output = strip_tool_calls(ai_output)
 
     if (('[分割回复]' in ai_output) and ('[添加长期记忆]' in ai_output)) == False:
         if double_output == True:
