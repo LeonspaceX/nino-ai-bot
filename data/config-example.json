@@ -14,6 +14,11 @@
         "tool_call_whitelist": [],
         "max_rounds": 10,
         "tool_result_context_limit": 5,
+        "connect_timeout_seconds": 15,
+        "prompt_timeout_seconds": 20,
+        "run_timeout_seconds": 60,
+        "heartbeat_interval_seconds": 10,
+        "heartbeat_timeout_seconds": 15,
         "servers": [
             {
                 "name": "PeekAgent",

@@ -7,6 +7,7 @@ import threading
 from agent_runtime import (
     agent_access,
     build_agent_prompt,
+    escape_user_tool_tags,
     execute_tool_calls,
     format_tool_result_context,
     normalize_agent_config,
@@ -273,7 +274,7 @@ def create_prompt(
         tmp_context_list = '没有上下文，这意味之前没有聊过天（或被手动清除）'
     else:
         for index in context_list:
-            tmp_context_list.append(index + '\n')
+            tmp_context_list.append(escape_user_tool_tags(index) + '\n')
     if memory_list == []:
         tmp_memory_list = '长期记忆库为空（或被手动清除）'
     else:
@@ -382,7 +383,7 @@ def create_prompt(
 
         {agent_section}
 
-        用户输入：{'还没有，可能需要你先发话' if user_input==None else user_input}
+        用户输入：{'还没有，可能需要你先发话' if user_input==None else escape_user_tool_tags(user_input)}
     ''')
     return prompt
 
@@ -430,10 +431,14 @@ def send(user_input: str, model: str, memory: bool, double_output: bool, user_id
     if access in {"owner", "whitelist"} and agent_manager is not None:
         max_rounds = agent_config["max_rounds"]
         context_limit = agent_config["tool_result_context_limit"]
-        for _ in range(max_rounds):
+        for round_index in range(max_rounds):
             tool_calls = parse_tool_calls(ai_output)
             if not tool_calls:
                 break
+            print(
+                f"[Agent ToolCall] 检测到工具调用轮次 "
+                f"{round_index + 1}/{max_rounds}: count={len(tool_calls)}"
+            )
             agent_rounds.append(execute_tool_calls(agent_manager, tool_calls))
             agent_tool_context, agent_images = format_tool_result_context(agent_rounds, context_limit)
             prompt = create_prompt(
@@ -446,6 +451,7 @@ def send(user_input: str, model: str, memory: bool, double_output: bool, user_id
             )
             ai_output = get_ai(prompt, model, user_id, images=agent_images)
         else:
+            print(f"[Agent ToolCall] 达到最大工具调用轮数：{max_rounds}")
             agent_tool_context, agent_images = format_tool_result_context(agent_rounds, context_limit)
             limit_message = f"已达到最大 Agent 工具调用轮数 {max_rounds}，请停止继续调用工具并给出最终回复。"
             agent_tool_context = (agent_tool_context + "\n\n" + limit_message).strip()
